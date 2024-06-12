@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <!-- Display the PDF -->
+    <script src="${resourcesFolderName}/pdf.min.js"></script>
+    <script src="${resourcesFolderName}/pdf.worker.min.js"></script>
+    <!-- Process the filled out PDF -->
+    <script src="${resourcesFolderName}/pdf-lib.min.js"></script>
+
+    <script src="${resourcesFolderName}/test.js"></script>
+  </head>
+  <body>
+    <div id="interactive-container">
+      <form id="form-container" method="POST" action="appURL">
+        <div id="pdf-container">
+          <canvas id="pdf-canvas"></canvas>
+        </div>
+        <div id="buttons-container">
+          <button id="submit">Submit</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Script to show PDF and make interactable -->
+    <script type="text/javascript">
+      var email_to;
+      var email_subject;
+      var email_assignment;
+      var email_student_name;
+      var email_student_email;
+      var email_body;
+
+      // Ask the interactive for the email info from the other scene
+      window.top.postMessage({ type: "get-info" }, "*");
+
+      // Listen for the interactive's response
+      window.onmessage = function (e) {
+        if (e.data.type == "post-info") {
+          console.log(e.data);
+          email_to = e.data.to;
+          email_subject = e.data.subject;
+          email_assignment = e.data.assignment;
+          email_student_name = e.data.student_name;
+          email_student_email = e.data.student_email;
+          email_body = e.data.body;
+
+          // Replace variables with real data
+          email_subject = email_subject
+            .replace("{student-name}", email_student_name)
+            .replace("{assignment-name}", email_assignment)
+            .replace("{student-email}", email_student_email);
+
+          email_body = email_body
+            .replace("{student-name}", email_student_name)
+            .replace("{assignment-name}", email_assignment)
+            .replace("{student-email}", email_student_email);
+
+          console.log(email_subject);
+          console.log(email_body);
+        }
+      };
+
+      const url = "${resourcesFolderName}/test.pdf";
+
+      const loadPdf = async (url) => {
+        const loadingTask = pdfjsLib.getDocument(url);
+        const pdf = await loadingTask.promise;
+        const page = await pdf.getPage(1);
+        const scale = 1.5;
+        const viewport = page.getViewport({ scale });
+
+        const canvas = document.getElementById("pdf-canvas");
+        const context = canvas.getContext("2d");
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        const renderContext = {
+          canvasContext: context,
+          viewport: viewport,
+        };
+        await page.render(renderContext).promise;
+
+        // Get annotations (form fields)
+        const annotations = await page.getAnnotations();
+
+        // Add annotations to page
+        annotations.forEach((annotation) => {
+          if (
+            annotation.subtype === "Widget" &&
+            annotation.fieldType === "Tx"
+          ) {
+            // Bottom left point: [0, 2] ??
+            // Top right point: [2, 3] ??
+            // 0: left
+            const input = document.createElement("input");
+            input.id = annotation.fieldName;
+            input.name = annotation.fieldName;
+            input.type = "text";
+            input.required = false;
+            input.style.position = "absolute";
+            input.style.left = `${annotation.rect[0] * scale}px`;
+            // Top: 3 - 1
+            input.style.top = `${
+              (780 - annotation.rect[1]) * (scale * 0.96)
+            }px`;
+            input.style.width = `${
+              (annotation.rect[2] - annotation.rect[0]) * scale
+            }px`;
+            input.style.height = `${
+              (annotation.rect[3] - annotation.rect[1]) * scale
+            }px`;
+
+            document.getElementById("pdf-container").appendChild(input);
+          }
+        });
+      };
+
+      loadPdf(url);
+    </script>
+
+    <!-- Script to process and send PDF once submitted -->
+    <script>
+      // ----- populatePDF ----- //
+      //
+      const populatePDF = async (data) => {
+        // Fetch the PDF with form fields
+        const formUrl = "test.pdf";
+        const formPdfBytes = await fetch(formUrl).then((res) =>
+          res.arrayBuffer()
+        );
+
+        // Load a PDF with form fields
+        const pdfDoc = await PDFLib.PDFDocument.load(formPdfBytes);
+
+        // Get the form containing all the fields
+        const form = pdfDoc.getForm();
+
+        var tempNameField;
+        // Fill in the form
+        for (let [key, value] of data.entries()) {
+          // Get all fields in the PDF by their names
+          tempNameField = form.getTextField(key);
+          tempNameField.setText(value);
+
+          // Output what the filled out info
+          // console.log(`${key}: ${value}`);
+        }
+
+        // Serialize the PDFDocument to bytes (a Uint8Array)
+        const pdfBytes = await pdfDoc.saveAsBase64();
+
+        const response = await fetch(
+          "http://rowan-pdf-emailer.us-east-1.elasticbeanstalk.com/send-pdf",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              pdf: pdfBytes,
+              to: email_to,
+              subject: email_subject,
+              body: email_body,
+              assignment_name: email_assignment,
+              student_name: email_student_name,
+            }),
+          }
+        );
+
+        const result = await response.text();
+        console.log(result);
+      };
+
+      document.addEventListener("DOMContentLoaded", function () {
+        // Submit listener
+        document
+          .getElementById("form-container")
+          .addEventListener("submit", function (e) {
+            e.preventDefault(); // Prevent default form submission
+
+            console.log(email_to);
+
+            const formData = new FormData(this); // Grab the form data
+
+            populatePDF(formData);
+          });
+      });
+    </script>
+  </body>
+
+  <style>
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0px;
+    }
+
+    #interactive-container {
+      width: 100%;
+      min-height: 100vh;
+      background-color: #eee;
+      padding: 25px;
+    }
+
+    #form-container {
+      display: flex;
+      gap: 30px;
+      flex-direction: column;
+      align-items: center;
+      padding-bottom: 30px;
+    }
+
+    #pdf-container {
+      position: relative;
+    }
+
+    #pdf-canvas {
+      width: 100%;
+      border-radius: 20px;
+      background-color: white;
+    }
+
+    button {
+      font-size: 18px;
+      padding: 20px 30px;
+      border-radius: 50px;
+      border: none;
+      background-color: #fcb42b;
+      cursor: pointer;
+    }
+  </style>
+</html>
